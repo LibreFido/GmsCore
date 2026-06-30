@@ -21,6 +21,18 @@ class AuthenticatorGetAssertionCommand(request: AuthenticatorGetAssertionRequest
         get() = 60000
 }
 
+// Fetch remaining assertions
+class AuthenticatorGetNextAssertionCommand :
+    Ctap2Command<AuthenticatorGetNextAssertionRequest, AuthenticatorGetAssertionResponse>(AuthenticatorGetNextAssertionRequest()) {
+    override fun decodeResponse(obj: CBORObject) = AuthenticatorGetAssertionResponse.decodeFromCbor(obj)
+    override val timeout: Long
+        get() = 60000
+}
+
+class AuthenticatorGetNextAssertionRequest : Ctap2Request(Ctap2CommandCode.AuthenticatorGetNextAssertion) {
+    override fun toString() = "AuthenticatorGetNextAssertionRequest()"
+}
+
 class AuthenticatorGetAssertionRequest(
     val rpId: String,
     val clientDataHash: ByteArray,

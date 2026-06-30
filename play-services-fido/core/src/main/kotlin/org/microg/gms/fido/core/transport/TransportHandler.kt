@@ -16,6 +16,9 @@ import com.google.android.gms.fido.fido2.api.common.ResidentKeyRequirement.*
 import com.google.android.gms.fido.fido2.api.common.UserVerificationRequirement.*
 import com.upokecenter.cbor.CBORObject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import org.microg.gms.fido.core.*
 import org.microg.gms.fido.core.protocol.*
 import org.microg.gms.fido.core.protocol.CoseKey.Companion.toByteArray
@@ -268,6 +271,7 @@ abstract class TransportHandler(val transport: Transport, val callback: Transpor
 
     private suspend fun ctap2sign(
         connection: CtapConnection,
+        context: Context,
         options: RequestOptions,
         clientDataHash: ByteArray,
         requireUserVerification: Boolean,
@@ -308,6 +312,48 @@ abstract class TransportHandler(val transport: Transport, val callback: Transpor
             pinProtocol
         )
         val ctap2Response = connection.runCommand(AuthenticatorGetAssertionCommand(request))
+                    
+        // Loop to fetch remaining credentials if numberOfCredentials > 1
+        val responses = mutableListOf(ctap2Response)
+        val numCredentials = ctap2Response.numberOfCredentials ?: 1
+        if (numCredentials > 1) {
+            // Limit maximum fetches to prevent OOM or infinite loops
+            val maxCredentials = kotlin.math.min(numCredentials, 50)
+            for (i in 1 until maxCredentials) {
+                try {
+                    responses.add(connection.runCommand(AuthenticatorGetNextAssertionCommand()))
+                } catch (e: Exception) {
+                    break
+                }
+            }
+        }
+
+        // Display an account chooser dialog if multiple credentials exist
+        if (responses.size > 1) {
+            return suspendCancellableCoroutine { cont ->
+                val builder = android.app.AlertDialog.Builder(context)
+                builder.setTitle(context.getString(R.string.fido_sign_in_selection_title))
+                val names = responses.map { 
+                    it.user?.displayName?.takeIf { s -> s.isNotBlank() } ?: 
+                    it.user?.name?.takeIf { s -> s.isNotBlank() } ?: 
+                    context.getString(R.string.fido_sign_in_selection_description)
+                }.toTypedArray()
+                    
+                builder.setItems(names) { _, which ->
+                    val selected = responses[which]
+                    cont.resume(selected to selected.credential?.id)
+                }
+                builder.setOnCancelListener {
+                    cont.resumeWithException(RequestHandlingException(ErrorCode.NOT_ALLOWED_ERR, "User canceled"))
+                }
+                    
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    val dialog = builder.create()
+                    cont.invokeOnCancellation { dialog.dismiss() }
+                    dialog.show()
+                }
+            }
+        }
         return ctap2Response to ctap2Response.credential?.id
     }
 
@@ -483,7 +529,7 @@ abstract class TransportHandler(val transport: Transport, val callback: Transpor
 
                     // Authenticators seem to give a response even without a PIN token, so we'll allow
                     // the client to call this even without having a PIN token set
-                    ctap2sign(connection, options, clientDataHash, requireUserVerification, pinToken)
+                    ctap2sign(connection, context, options, clientDataHash, requireUserVerification, pinToken)
                 } catch (e: Ctap2StatusException) {
                     if (e.status == 0x31.toByte()) {
                         throw WrongPinException()
