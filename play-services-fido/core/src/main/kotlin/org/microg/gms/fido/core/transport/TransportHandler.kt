@@ -322,7 +322,11 @@ abstract class TransportHandler(val transport: Transport, val callback: Transpor
             for (i in 1 until maxCredentials) {
                 try {
                     responses.add(connection.runCommand(AuthenticatorGetNextAssertionCommand()))
+                } catch (e: java.io.IOException) {
+                    Log.w(TAG, "Connection lost during credential pagination, throwing", e)
+                    throw e
                 } catch (e: Exception) {
+                    Log.w(TAG, "Other exception during credential pagination, breaking", e)
                     break
                 }
             }
